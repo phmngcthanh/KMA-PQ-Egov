@@ -1,0 +1,46 @@
+.pdf-signer {
+    min-height: 80vh;
+}
+
+.pdf-signer h2 {
+    color: #1a365d;
+}
+
+.pdf-signer .card {
+    border: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.pdf-signer .card-header {
+    font-weight: 600;
+}
+
+.pdf-signer .verification-result {
+    margin-top: 1rem;
+}
+
+.pdf-signer .verification-result .list-group-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.pdf-signer .verification-result .list-group-item strong {
+    color: #495057;
+}
+
+.pdf-signer .bg-light {
+    border: 1px solid #e9ecef;
+}
+
+.pdf-signer .bg-light h5 {
+    color: #1a365d;
+}
+
+.pdf-signer .bg-light ul {
+    padding-left: 1.5rem;
+}
+
+.pdf-signer .bg-light li {
+    margin-bottom: 0.5rem;
+}

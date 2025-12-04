@@ -1,0 +1,1135 @@
+# Deployment & Maintenance Guide
+## E-Government PKI System - NT208
+
+**Version:** 1.0  
+**Date:** December 4, 2025
+
+---
+
+## Table of Contents
+
+1. [System Requirements](#1-system-requirements)
+2. [Quick Start with Docker](#2-quick-start-with-docker)
+3. [Manual Installation](#3-manual-installation)
+4. [Configuration](#4-configuration)
+5. [Running the Application](#5-running-the-application)
+6. [Production Deployment](#6-production-deployment)
+7. [Maintenance](#7-maintenance)
+8. [Troubleshooting](#8-troubleshooting)
+
+---
+
+## 1. System Requirements
+
+### Minimum Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| OS | Ubuntu 20.04+ / Windows 10+ / macOS 11+ |
+| CPU | 2 cores |
+| RAM | 4 GB |
+| Storage | 20 GB |
+| Python | 3.8+ |
+| Node.js | 14.x+ |
+| PostgreSQL | 12+ |
+
+### Recommended for Production
+
+| Component | Requirement |
+|-----------|-------------|
+| OS | Ubuntu 22.04 LTS |
+| CPU | 4+ cores |
+| RAM | 8+ GB |
+| Storage | 100 GB SSD |
+| Python | 3.10+ |
+| Node.js | 18.x LTS |
+| PostgreSQL | 15+ |
+
+### Software Dependencies
+
+- **Backend:** Django 3.1+, Django REST Framework, liboqs (post-quantum)
+- **Frontend:** React 17+, Redux, Material-UI
+- **Database:** PostgreSQL with psycopg2
+- **PDF Processing:** PDFNetPython3
+- **Email:** SMTP server (Gmail, SendGrid, etc.)
+
+---
+
+## 2. Quick Start with Docker
+
+### Prerequisites
+
+- Docker 20.10+
+- Docker Compose 2.0+
+
+### Project Structure for Docker
+
+```
+project/
+├── docker-compose.yml
+├── docker-compose.prod.yml
+├── backend/
+│   └── Dockerfile
+├── frontend/
+│   └── Dockerfile
+└── nginx/
+    └── nginx.conf
+```
+
+### Docker Files
+
+#### `docker-compose.yml` (Development)
+
+```yaml
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: pki_postgres
+    environment:
+      POSTGRES_DB: chinhquyendt
+      POSTGRES_USER: pnthanh
+      POSTGRES_PASSWORD: pnthanh2001
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pnthanh -d chinhquyendt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (for caching and Celery)
+  redis:
+    image: redis:7-alpine
+    container_name: pki_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pki_backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+      - static_volume:/app/static
+      - media_volume:/app/hoso/static
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - DATABASE_URL=postgresql://pnthanh:pnthanh2001@db:5432/chinhquyendt
+      - DJANGO_SECRET_KEY=your-secret-key-change-in-production
+      - PKI_MASTER_KEY=CHANGE_THIS_IN_PRODUCTION_32_BYTES!!
+      - EMAIL_HOST_USER=your-email@gmail.com
+      - EMAIL_HOST_PASSWORD=your-app-password
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pki_frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000/api
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  static_volume:
+  media_volume:
+```
+
+#### `backend/Dockerfile`
+
+```dockerfile
+# Backend Dockerfile
+FROM python:3.10-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    cmake \
+    ninja-build \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install liboqs for post-quantum cryptography
+RUN git clone --depth 1 --branch 0.7.2 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs \
+    && cd /tmp/liboqs \
+    && mkdir build && cd build \
+    && cmake -GNinja -DBUILD_SHARED_LIBS=ON .. \
+    && ninja \
+    && ninja install \
+    && ldconfig \
+    && rm -rf /tmp/liboqs
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Copy project
+COPY . .
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Collect static files
+RUN python manage.py collectstatic --noinput || true
+
+# Expose port
+EXPOSE 8000
+
+# Run migrations and start server
+CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
+```
+
+#### `frontend/Dockerfile`
+
+```dockerfile
+# Frontend Dockerfile
+FROM node:18-alpine
+
+# Set work directory
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Copy project files
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Start development server
+CMD ["npm", "start"]
+```
+
+### Running with Docker
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd "code web"
+
+# Create environment file
+cp .env.example .env
+# Edit .env with your settings
+
+# Build and start all services
+docker-compose up --build
+
+# Run in detached mode
+docker-compose up -d --build
+
+# View logs
+docker-compose logs -f
+
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (clean slate)
+docker-compose down -v
+```
+
+### Docker Commands Reference
+
+```bash
+# Rebuild specific service
+docker-compose build backend
+
+# Run migrations
+docker-compose exec backend python manage.py migrate
+
+# Create superuser
+docker-compose exec backend python manage.py createsuperuser
+
+# Access backend shell
+docker-compose exec backend python manage.py shell
+
+# Access PostgreSQL
+docker-compose exec db psql -U pnthanh -d chinhquyendt
+
+# View container status
+docker-compose ps
+
+# Scale services (for load testing)
+docker-compose up -d --scale backend=3
+```
+
+---
+
+## 3. Manual Installation
+
+### 3.1 Backend Setup
+
+#### Step 1: Clone Repository
+
+```bash
+git clone <repository-url>
+cd "code web/backend"
+```
+
+#### Step 2: Create Virtual Environment
+
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Linux/macOS
+python3 -m venv venv
+source venv/bin/activate
+```
+
+#### Step 3: Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Step 4: Install liboqs (Post-Quantum Cryptography)
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install -y cmake ninja-build libssl-dev
+
+git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
+cd liboqs
+mkdir build && cd build
+cmake -GNinja -DBUILD_SHARED_LIBS=ON ..
+ninja
+sudo ninja install
+sudo ldconfig
+```
+
+**Windows:**
+```powershell
+# Install via vcpkg or use pre-built binaries
+# See: https://github.com/open-quantum-safe/liboqs#windows
+```
+
+**macOS:**
+```bash
+brew install cmake ninja openssl
+git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
+cd liboqs && mkdir build && cd build
+cmake -GNinja -DBUILD_SHARED_LIBS=ON ..
+ninja
+sudo ninja install
+```
+
+#### Step 5: Setup PostgreSQL
+
+```sql
+-- Connect to PostgreSQL
+psql -U postgres
+
+-- Create user and database
+CREATE USER pnthanh WITH PASSWORD 'pnthanh2001';
+CREATE DATABASE chinhquyendt OWNER pnthanh;
+GRANT ALL PRIVILEGES ON DATABASE chinhquyendt TO pnthanh;
+
+-- Exit
+\q
+```
+
+#### Step 6: Configure Environment
+
+Create `.env` file in backend directory:
+
+```env
+# Django Settings
+DEBUG=True
+SECRET_KEY=your-very-secret-key-change-in-production
+ALLOWED_HOSTS=localhost,127.0.0.1
+
+# Database
+DATABASE_URL=postgresql://pnthanh:pnthanh2001@localhost:5432/chinhquyendt
+
+# Email Configuration
+EMAIL_HOST_USER=your-email@gmail.com
+EMAIL_HOST_PASSWORD=your-app-password
+
+# PKI Configuration
+PKI_MASTER_KEY=your-32-byte-master-key-for-encryption
+PKI_DEFAULT_PQ_ALGORITHM=DILITHIUM3
+PKI_REQUIRE_HYBRID_SIGNATURES=True
+```
+
+#### Step 7: Run Migrations
+
+```bash
+python manage.py makemigrations
+python manage.py migrate
+```
+
+#### Step 8: Create Superuser
+
+```bash
+python manage.py createsuperuser
+```
+
+#### Step 9: Start Backend Server
+
+```bash
+python manage.py runserver 0.0.0.0:8000
+```
+
+### 3.2 Frontend Setup
+
+#### Step 1: Navigate to Frontend
+
+```bash
+cd "../frontend"
+```
+
+#### Step 2: Install Dependencies
+
+```bash
+npm install
+```
+
+#### Step 3: Configure API Endpoint
+
+Edit `src/config/api.js`:
+
+```javascript
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+export default API_URL;
+```
+
+#### Step 4: Start Frontend
+
+```bash
+npm start
+```
+
+The frontend will be available at `http://localhost:3000`
+
+---
+
+## 4. Configuration
+
+### 4.1 Django Settings
+
+Key settings in `pq_egov_pki/settings.py`:
+
+```python
+# Security (Production)
+DEBUG = False
+SECRET_KEY = os.environ.get('SECRET_KEY')
+ALLOWED_HOSTS = ['your-domain.com', 'www.your-domain.com']
+
+# Database
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql_psycopg2',
+        'NAME': os.environ.get('DB_NAME', 'chinhquyendt'),
+        'USER': os.environ.get('DB_USER', 'pnthanh'),
+        'PASSWORD': os.environ.get('DB_PASSWORD'),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
+    }
+}
+
+# PKI Configuration
+PKI_MASTER_KEY = os.environ.get('PKI_MASTER_KEY')
+PKI_DEFAULT_PQ_ALGORITHM = 'DILITHIUM3'
+PKI_REQUIRE_HYBRID_SIGNATURES = True
+```
+
+### 4.2 Email Configuration
+
+For Gmail:
+1. Enable 2-Factor Authentication
+2. Generate App Password: Google Account → Security → App Passwords
+3. Use App Password in settings
+
+```python
+EMAIL_USE_TLS = True
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')
+```
+
+### 4.3 CORS Configuration
+
+```python
+# Development
+CORS_ORIGIN_ALLOW_ALL = True
+
+# Production
+CORS_ORIGIN_ALLOW_ALL = False
+CORS_ALLOWED_ORIGINS = [
+    "https://your-domain.com",
+    "https://www.your-domain.com",
+]
+```
+
+---
+
+## 5. Running the Application
+
+### Development Mode
+
+**Terminal 1 - Backend:**
+```bash
+cd backend
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+python manage.py runserver
+```
+
+**Terminal 2 - Frontend:**
+```bash
+cd frontend
+npm start
+```
+
+### Access Points
+
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:8000/api/ |
+| Admin Panel | http://localhost:8000/admin/ |
+| API Documentation | http://localhost:8000/swagger/ |
+
+---
+
+## 6. Production Deployment
+
+### 6.1 Docker Production Setup
+
+#### `docker-compose.prod.yml`
+
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: pki_postgres_prod
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    restart: always
+    networks:
+      - pki_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: pki_redis_prod
+    restart: always
+    networks:
+      - pki_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: pki_backend_prod
+    command: gunicorn pq_egov_pki.wsgi:application --bind 0.0.0.0:8000 --workers 4
+    volumes:
+      - static_volume:/app/static
+      - media_volume:/app/hoso/static
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=${SECRET_KEY}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - PKI_MASTER_KEY=${PKI_MASTER_KEY}
+      - EMAIL_HOST_USER=${EMAIL_HOST_USER}
+      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+    depends_on:
+      - db
+      - redis
+    restart: always
+    networks:
+      - pki_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: pki_frontend_prod
+    volumes:
+      - frontend_build:/app/build
+    networks:
+      - pki_network
+
+  nginx:
+    image: nginx:alpine
+    container_name: pki_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - static_volume:/app/static:ro
+      - media_volume:/app/media:ro
+      - frontend_build:/app/frontend:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: always
+    networks:
+      - pki_network
+
+volumes:
+  postgres_data_prod:
+  static_volume:
+  media_volume:
+  frontend_build:
+
+networks:
+  pki_network:
+    driver: bridge
+```
+
+#### `backend/Dockerfile.prod`
+
+```dockerfile
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    cmake \
+    ninja-build \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install liboqs
+RUN git clone --depth 1 --branch 0.7.2 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs \
+    && cd /tmp/liboqs \
+    && mkdir build && cd build \
+    && cmake -GNinja -DBUILD_SHARED_LIBS=ON .. \
+    && ninja \
+    && ninja install \
+    && ldconfig \
+    && rm -rf /tmp/liboqs
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install gunicorn
+
+COPY . .
+
+RUN mkdir -p logs static
+
+RUN python manage.py collectstatic --noinput
+
+EXPOSE 8000
+
+CMD ["gunicorn", "pq_egov_pki.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]
+```
+
+#### `frontend/Dockerfile.prod`
+
+```dockerfile
+# Build stage
+FROM node:18-alpine as build
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production
+
+COPY . .
+
+ARG REACT_APP_API_URL
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
+RUN npm run build
+
+# Production stage
+FROM nginx:alpine
+
+COPY --from=build /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+#### `nginx/nginx.conf`
+
+```nginx
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Logging
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+
+    # Gzip compression
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+
+    upstream backend {
+        server backend:8000;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        # Redirect HTTP to HTTPS (uncomment in production)
+        # return 301 https://$server_name$request_uri;
+
+        # Frontend
+        location / {
+            root /app/frontend;
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Backend API
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Admin
+        location /admin/ {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        # Static files
+        location /static/ {
+            alias /app/static/;
+        }
+
+        # Media files
+        location /hoso/static/ {
+            alias /app/media/;
+        }
+
+        # Swagger documentation
+        location /swagger/ {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+        }
+    }
+
+    # HTTPS server (uncomment and configure for production)
+    # server {
+    #     listen 443 ssl http2;
+    #     server_name your-domain.com;
+    #
+    #     ssl_certificate /etc/nginx/ssl/fullchain.pem;
+    #     ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+    #     ssl_protocols TLSv1.2 TLSv1.3;
+    #     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
+    #
+    #     # Client certificate authentication (optional)
+    #     # ssl_client_certificate /etc/nginx/ssl/ca.crt;
+    #     # ssl_verify_client optional;
+    #
+    #     # Same location blocks as above...
+    # }
+}
+```
+
+### 6.2 Production Deployment Commands
+
+```bash
+# Create production environment file
+cat > .env.prod << EOF
+SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
+DB_NAME=chinhquyendt
+DB_USER=pnthanh
+DB_PASSWORD=strong-password-here
+PKI_MASTER_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+EMAIL_HOST_USER=your-email@gmail.com
+EMAIL_HOST_PASSWORD=your-app-password
+REACT_APP_API_URL=https://your-domain.com/api
+EOF
+
+# Deploy with production compose
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+# Run migrations
+docker-compose -f docker-compose.prod.yml exec backend python manage.py migrate
+
+# Create superuser
+docker-compose -f docker-compose.prod.yml exec backend python manage.py createsuperuser
+
+# View logs
+docker-compose -f docker-compose.prod.yml logs -f
+```
+
+### 6.3 SSL/TLS Setup with Let's Encrypt
+
+```bash
+# Install certbot
+sudo apt install certbot python3-certbot-nginx
+
+# Obtain certificate
+sudo certbot --nginx -d your-domain.com -d www.your-domain.com
+
+# Auto-renewal (cron)
+0 12 * * * /usr/bin/certbot renew --quiet
+```
+
+---
+
+## 7. Maintenance
+
+### 7.1 Database Backup
+
+```bash
+# Manual backup
+docker-compose exec db pg_dump -U pnthanh chinhquyendt > backup_$(date +%Y%m%d).sql
+
+# Restore backup
+docker-compose exec -T db psql -U pnthanh chinhquyendt < backup_20251204.sql
+```
+
+**Automated Backup Script:**
+
+```bash
+#!/bin/bash
+# backup.sh
+
+BACKUP_DIR="/backups/pki"
+DATE=$(date +%Y%m%d_%H%M%S)
+RETENTION_DAYS=30
+
+# Create backup
+docker-compose exec -T db pg_dump -U pnthanh chinhquyendt | gzip > "$BACKUP_DIR/backup_$DATE.sql.gz"
+
+# Remove old backups
+find "$BACKUP_DIR" -name "backup_*.sql.gz" -mtime +$RETENTION_DAYS -delete
+
+echo "Backup completed: backup_$DATE.sql.gz"
+```
+
+Add to crontab:
+```bash
+# Daily backup at 2 AM
+0 2 * * * /path/to/backup.sh >> /var/log/backup.log 2>&1
+```
+
+### 7.2 Log Management
+
+```bash
+# View Django logs
+tail -f backend/logs/pki.log
+
+# View Docker logs
+docker-compose logs -f backend
+
+# Rotate logs (logrotate config)
+cat > /etc/logrotate.d/pki << EOF
+/path/to/backend/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 www-data www-data
+}
+EOF
+```
+
+### 7.3 Updating the Application
+
+```bash
+# Pull latest changes
+git pull origin main
+
+# Rebuild and restart services
+docker-compose down
+docker-compose up -d --build
+
+# Run migrations if needed
+docker-compose exec backend python manage.py migrate
+
+# Clear cache if using Redis
+docker-compose exec redis redis-cli FLUSHALL
+```
+
+### 7.4 Health Checks
+
+```bash
+# Check service status
+docker-compose ps
+
+# Check backend health
+curl -f http://localhost:8000/api/health/ || echo "Backend unhealthy"
+
+# Check database connection
+docker-compose exec backend python manage.py dbshell -c "SELECT 1;"
+
+# Check disk space
+df -h
+
+# Check memory usage
+docker stats --no-stream
+```
+
+### 7.5 PKI Maintenance
+
+```bash
+# Check expiring certificates (within 30 days)
+docker-compose exec backend python manage.py shell << EOF
+from pki.models import UserCertificate
+from datetime import datetime, timedelta
+expiring = UserCertificate.objects.filter(
+    valid_to__lte=datetime.now() + timedelta(days=30),
+    status='active'
+)
+for cert in expiring:
+    print(f"Certificate {cert.serial_number} expires on {cert.valid_to}")
+EOF
+
+# Generate new CRL
+docker-compose exec backend python manage.py shell << EOF
+from pki.services.cert_service import CertificateService
+from pki.models import CertificateAuthority
+for ca in CertificateAuthority.objects.filter(status='active'):
+    CertificateService.generate_crl(ca)
+    print(f"CRL generated for {ca.common_name}")
+EOF
+```
+
+---
+
+## 8. Troubleshooting
+
+### Common Issues
+
+#### Database Connection Failed
+
+```
+Error: could not connect to server: Connection refused
+```
+
+**Solution:**
+```bash
+# Check if PostgreSQL is running
+docker-compose ps db
+
+# Check PostgreSQL logs
+docker-compose logs db
+
+# Verify connection settings
+docker-compose exec backend python -c "import psycopg2; psycopg2.connect('dbname=chinhquyendt user=pnthanh password=pnthanh2001 host=db')"
+```
+
+#### Migration Errors
+
+```
+Error: django.db.utils.ProgrammingError: relation does not exist
+```
+
+**Solution:**
+```bash
+# Reset migrations (development only!)
+docker-compose exec backend python manage.py migrate --fake-initial
+
+# Or recreate database
+docker-compose down -v
+docker-compose up -d
+docker-compose exec backend python manage.py migrate
+```
+
+#### liboqs Not Found
+
+```
+Error: ImportError: liboqs.so: cannot open shared object file
+```
+
+**Solution:**
+```bash
+# Check if liboqs is installed
+ldconfig -p | grep liboqs
+
+# Reinstall liboqs
+cd /tmp
+git clone https://github.com/open-quantum-safe/liboqs.git
+cd liboqs && mkdir build && cd build
+cmake -GNinja -DBUILD_SHARED_LIBS=ON ..
+ninja && sudo ninja install && sudo ldconfig
+```
+
+#### Frontend Build Errors
+
+```
+Error: node-sass could not find a binding
+```
+
+**Solution:**
+```bash
+# Rebuild node-sass
+npm rebuild node-sass
+
+# Or use sass instead
+npm uninstall node-sass
+npm install sass
+```
+
+#### CORS Errors
+
+```
+Error: Access-Control-Allow-Origin header missing
+```
+
+**Solution:**
+Check `settings.py`:
+```python
+CORS_ORIGIN_ALLOW_ALL = True  # Development
+# or
+CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]
+```
+
+#### Email Sending Failed
+
+```
+Error: SMTPAuthenticationError
+```
+
+**Solution:**
+1. Enable 2FA on Gmail
+2. Generate App Password
+3. Update `EMAIL_HOST_PASSWORD` with App Password
+
+### Getting Help
+
+1. **Check Logs:** Always check logs first
+   ```bash
+   docker-compose logs -f
+   ```
+
+2. **Django Debug:** Enable debug mode temporarily
+   ```python
+   DEBUG = True
+   ```
+
+3. **Database Issues:** Access PostgreSQL directly
+   ```bash
+   docker-compose exec db psql -U pnthanh -d chinhquyendt
+   ```
+
+4. **Network Issues:** Check container networking
+   ```bash
+   docker network inspect code-web_pki_network
+   ```
+
+---
+
+## Quick Reference
+
+### Essential Commands
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Stop all services
+docker-compose down
+
+# View logs
+docker-compose logs -f [service]
+
+# Run migrations
+docker-compose exec backend python manage.py migrate
+
+# Create superuser
+docker-compose exec backend python manage.py createsuperuser
+
+# Backend shell
+docker-compose exec backend python manage.py shell
+
+# Database access
+docker-compose exec db psql -U pnthanh -d chinhquyendt
+
+# Backup database
+docker-compose exec db pg_dump -U pnthanh chinhquyendt > backup.sql
+
+# Restart service
+docker-compose restart [service]
+```
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `SECRET_KEY` | Django secret key | Yes |
+| `DEBUG` | Debug mode (True/False) | No |
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `PKI_MASTER_KEY` | Encryption key for CA private keys | Yes |
+| `EMAIL_HOST_USER` | SMTP username | Yes |
+| `EMAIL_HOST_PASSWORD` | SMTP password | Yes |
+| `REACT_APP_API_URL` | Backend API URL | Yes |
+
+---
+
+**End of Deployment Guide**
